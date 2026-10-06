@@ -1,30 +1,3 @@
-"""
-Automatic Research Paper Summarizer Using NLP
------------------------------------------------
-- Accepts a research paper PDF
-- Extracts text (PyMuPDF)
-- Generates an adjustable-length summary (Hugging Face Transformers)
-- Extracts keywords (KeyBERT)
-- Detects Methodology / Future Work / Conclusion sections using heading-aware parsing
-- Lets the user download a generated PDF report of each summarized paper,
-  with a history that persists even after a new file is uploaded
-- Displays everything in a Streamlit web interface with two tabs
-
-How the summary is made quickly:
-    1. References and back matter are removed.
-    2. An extractive pass (TF-IDF centrality) keeps only the most informative
-       sentences, a few hundred words in total, instead of the whole paper.
-    3. Those sentences are summarized in one batched call with greedy decoding.
-    Summarizing every 400-word slice of the full paper with beam search was
-    what made the original version take 10 to 15 minutes on a CPU.
-
-Run with:
-    pip install streamlit pymupdf transformers torch keybert sentence-transformers fpdf2 scikit-learn
-    streamlit run app1.py
-
-Optional: copy config.toml to a ".streamlit" folder next to this file so the
-built-in widgets (slider, tabs, focus rings) use the same colours as the page.
-"""
 
 import html
 import re
@@ -44,18 +17,14 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 SUMMARIZER_MODEL = "sshleifer/distilbart-cnn-12-6"
 SUMMARY_LENGTH_OPTIONS = [100, 150, 200, 300]
 
-# Speed and quality knobs
-CHUNK_WORDS = 280          # words per block handed to the summarizer
-BATCH_SIZE = 4             # blocks summarized per forward pass
-TOKENS_PER_WORD = 1.35     # rough BART token count per English word
-NUM_BEAMS = 1              # 1 = greedy (fastest). 2 is a bit slower and a bit smoother.
 
+CHUNK_WORDS = 280          
+BATCH_SIZE = 4            
+TOKENS_PER_WORD = 1.35     
+NUM_BEAMS = 1              
 NOT_DETECTED = "Section not clearly detected in this document."
 
 
-# ----------------------------
-# Cached model loaders
-# ----------------------------
 
 @st.cache_resource(show_spinner=False)
 def load_summarizer():
@@ -72,9 +41,7 @@ def load_keyword_model():
     return KeyBERT(model="all-MiniLM-L6-v2")
 
 
-# ----------------------------
-# PDF text extraction
-# ----------------------------
+
 
 def extract_text_from_pdf(uploaded_file) -> str:
     """Extract raw text from an uploaded PDF file using PyMuPDF, keeping line breaks."""
@@ -91,8 +58,8 @@ def extract_text_from_pdf(uploaded_file) -> str:
 def strip_artifacts(text: str) -> str:
     """Remove PDF-font bullet glyphs (Private Use Area chars) and control chars
     that render as boxes in the UI."""
-    text = re.sub(r"[\uf000-\uf8ff]", "- ", text)  # PUA glyphs -> bullet
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)  # control chars
+    text = re.sub(r"[\uf000-\uf8ff]", "- ", text) 
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)  
     text = text.replace("\ufb00", "ff").replace("\ufb01", "fi").replace("\ufb02", "fl")
     return text
 
@@ -111,11 +78,7 @@ def make_flat_text(structured_text: str) -> str:
     return re.sub(r"\s+", " ", structured_text).strip()
 
 
-# ----------------------------
-# Heading-aware section extraction
-# ----------------------------
 
-# Canonical heading categories we care about, plus the words that identify them.
 HEADING_CATEGORIES = {
     "methodology": [
         "methodology", "methods", "method", "approach", "proposed method",
@@ -142,8 +105,7 @@ HEADING_CATEGORIES = {
     ],
 }
 
-# A line is a heading candidate if it's short, and (mostly) matches one of the
-# phrases above, optionally prefixed with a section number like "5." or "V."
+
 _NUMBER_PREFIX = r"^\s*(?:[0-9]{1,2}(?:\.[0-9]{1,2})*\.?|[IVXLC]+\.)?\s*"
 
 
@@ -167,7 +129,7 @@ def find_headings(structured_text: str):
                 if pattern.match(stripped):
                     headings.append((offset, category))
                     break
-        offset += len(line) + 1  # +1 for the "\n" joiner
+        offset += len(line) + 1 
     return headings
 
 
@@ -340,9 +302,9 @@ def find_section(structured_text: str, category: str, max_chars: int = 900) -> s
         [pos for pos, _ in headings if pos > start] + [pos for pos, _ in top_level if pos > start]
     )
     end = boundaries[0] if boundaries else len(structured_text)
-    end = min(end, start + max_chars + 400)  # hard safety cap
+    end = min(end, start + max_chars + 400)  
 
-    # Skip past the heading line itself
+    
     newline_after_heading = structured_text.find("\n", start)
     content_start = newline_after_heading + 1 if newline_after_heading != -1 else start
 
@@ -363,9 +325,6 @@ def strip_back_matter(structured_text: str) -> str:
     return structured_text
 
 
-# ----------------------------
-# Fast summarization
-# ----------------------------
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(\[])")
 
@@ -377,7 +336,7 @@ def split_sentences(flat_text: str):
     for raw in _SENTENCE_SPLIT.split(flat_text):
         sentence = raw.strip()
         if len(sentence.split()) > 70:
-            # Usually the title/author block fused with the first abstract sentence.
+            
             idx = sentence.lower().rfind("abstract")
             if idx != -1:
                 sentence = sentence[idx + len("abstract"):].lstrip(" :.-").strip()
@@ -440,8 +399,7 @@ def group_into_chunks(sentences, max_words: int = CHUNK_WORDS):
     if current:
         groups.append((current, count))
 
-    # Fold a very short tail into the previous block so the model is not
-    # forced to pad a tiny input out to its minimum length.
+   
     if len(groups) > 1 and groups[-1][1] < 80:
         tail, _ = groups.pop()
         groups[-1][0].extend(tail)
@@ -462,7 +420,7 @@ def generate_summaries(tokenizer, model, device, texts, max_new_tokens: int):
                 num_beams=NUM_BEAMS,
                 do_sample=False,
                 max_new_tokens=max_new_tokens,
-                min_length=0,  # override the model's built-in minimum of 56 tokens
+                min_length=0,  
                 min_new_tokens=min_new_tokens,
                 no_repeat_ngram_size=3,
                 length_penalty=1.0,
@@ -487,15 +445,13 @@ def summarize_text(tokenizer, model, device, flat_text: str, target_words: int):
     partials = generate_summaries(tokenizer, model, device, chunks, per_chunk)
     combined = " ".join(p for p in partials if p)
 
-    # Only run a second pass when the stitched result is clearly too long.
+    
     if len(chunks) > 1 and len(combined.split()) > target_words * 1.25:
         combined = generate_summaries(tokenizer, model, device, [combined], target_tokens)[0]
     return combined, key_sentences
 
 
-# ----------------------------
-# Keyword extraction
-# ----------------------------
+
 
 def extract_keywords(kw_model, text: str, top_n: int = 10):
     keywords = kw_model.extract_keywords(
@@ -507,9 +463,6 @@ def extract_keywords(kw_model, text: str, top_n: int = 10):
     return [kw for kw, score in keywords]
 
 
-# ----------------------------
-# PDF report generation
-# ----------------------------
 
 _PUNCTUATION_MAP = str.maketrans({
     "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
@@ -533,11 +486,9 @@ def generate_summary_pdf(filename, target_words, summary, keywords, methodology,
     pdf.set_margins(20, 18, 20)
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.add_page()
-    width = pdf.epw  # usable width between the margins
+    width = pdf.epw  
 
-    # multi_cell leaves the cursor at the right margin by default. Without
-    # new_x=LMARGIN the next multi_cell gets zero width, which is what raised
-    # "Not enough horizontal space to render a single character".
+   
     def write(text, size, style="", line_height=6, color=(0, 0, 0)):
         pdf.set_font("Helvetica", style, size)
         pdf.set_text_color(*color)
@@ -568,10 +519,6 @@ def generate_summary_pdf(filename, target_words, summary, keywords, methodology,
 
     return bytes(pdf.output())
 
-
-# ----------------------------
-# Interface styling
-# ----------------------------
 
 APP_CSS = """
 <style>
@@ -692,9 +639,7 @@ def _fmt_seconds(seconds: float) -> str:
     return f"{seconds / 60:.1f} minutes"
 
 
-# ----------------------------
-# Streamlit UI
-# ----------------------------
+
 
 def process_paper(uploaded_file, target_words):
     started = time.perf_counter()
@@ -824,11 +769,11 @@ def main():
     )
 
     if "history" not in st.session_state:
-        st.session_state.history = []  # each item: result dict, newest first
+        st.session_state.history = []  
     if "current_result" not in st.session_state:
         st.session_state.current_result = None
 
-    # Load models up front so the wait happens once, not on the first Generate click.
+    
     with st.spinner("Loading language models. This is only slow the first time."):
         load_summarizer()
         load_keyword_model()
